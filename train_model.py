@@ -14,7 +14,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 
 
-df = pd.read_csv("C:/Users/ckche/OneDrive/Documents/health-ai-platform/routine_dataset.csv")
+df = pd.read_csv("routine_dataset.csv")
 print(df.head())
 print(df.shape)
 
@@ -35,7 +35,7 @@ x_train, x_test, y_train, y_test = train_test_split(x, y, test_size = 0.2, rando
 pipeline = Pipeline([
     ("imputer", SimpleImputer(strategy = "mean")),
     ("model", RandomForestRegressor(
-        n_estimators = 300, 
+        n_estimators = 100, 
         max_depth = 20, 
         min_samples_leaf = 2,
         max_features = 'sqrt',
@@ -62,7 +62,7 @@ print("R2 Score: ", round(r2, 3))
 cv_scores = cross_val_score(pipeline, x, y, cv = 5, scoring = "r2")
 print("Mean CV R^2: ", cv_scores.mean())
 
-joblib.dump(pipeline, "health_model.pkl")
+joblib.dump(pipeline, "health_model.pkl", compress = 3)
 
 importances = pd.Series(pipeline["model"].feature_importances_, index=x.columns)
 importances = importances.sort_values()
