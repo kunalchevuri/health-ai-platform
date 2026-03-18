@@ -15,12 +15,11 @@ FEATURE_COLUMNS = joblib.load("feature_columns.pkl")
 # Fields every user can reasonably answer — missing these is an error
 REQUIRED_FIELDS = [
     "age", "sex", "sleep_hours", "steps", "exercise_minutes",
-    "stress_level", "screen_time_hours", "work_hours",
-    "junk_food_meals", "water_intake_liters"
+    "stress_level", "screen_time_hours", "work_hours", "junk_food_meals"
 ]
 
 # Fields that are optional — imputer fills them if missing
-# bmi, fitness_level, sleep_consistency, caloric_intake, meals
+# bmi, fitness_level, sleep_consistency, caloric_intake, meals, water_intake_liters
 
 # Valid ranges for each field
 BOUNDS = {
@@ -58,9 +57,9 @@ def build_feature_array(user_data):
     screen   = user_data["screen_time_hours"]
     work     = user_data["work_hours"]
     junk     = user_data["junk_food_meals"]
-    water    = user_data["water_intake_liters"]
-    calories = user_data.get("caloric_intake")   # optional — imputer fills if None
-    meals    = user_data.get("meals") or 3        # safe default for division below
+    water    = user_data.get("water_intake_liters") or 2.0
+    calories = user_data.get("caloric_intake") or 2200
+    meals    = user_data.get("meals") or 3
 
     feature_dict = {
         "age":               user_data["age"],
@@ -116,7 +115,7 @@ def calculate_sub_scores(user_data):
     screen      = user_data["screen_time_hours"]
     work        = user_data["work_hours"]
     junk        = user_data["junk_food_meals"]
-    water       = user_data["water_intake_liters"]
+    water       = user_data.get("water_intake_liters") or 2.0
     calories    = user_data.get("caloric_intake") or 2200
     consistency = user_data.get("sleep_consistency") or 0.7
 
