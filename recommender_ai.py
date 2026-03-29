@@ -15,7 +15,8 @@ FEATURE_COLUMNS = joblib.load("feature_columns.pkl")
 # Fields every user can reasonably answer — missing these is an error
 REQUIRED_FIELDS = [
     "age", "sex", "sleep_hours", "steps", "exercise_minutes",
-    "stress_level", "screen_time_hours", "work_hours", "junk_food_meals"
+    "stress_level", "screen_time_hours", "work_hours", "junk_food_meals",
+    "water_intake_liters"
 ]
 
 # Fields that are optional — imputer fills them if missing
@@ -103,53 +104,128 @@ def run_counterfactual(user_data, override):
 
 
 def calculate_sub_scores(user_data):
-    """Calculate 0-100 sub-scores from raw inputs.
-    Note: These use manually designed formulas, not the ML model.
-    They are directionally aligned with the training formula but approximate.
-    Future improvement: train separate models per sub-score.
     """
-    sleep       = user_data["sleep_hours"]
-    steps       = user_data["steps"]
-    exercise    = user_data["exercise_minutes"]
-    stress      = user_data["stress_level"]
-    screen      = user_data["screen_time_hours"]
-    work        = user_data["work_hours"]
-    junk        = user_data["junk_food_meals"]
-    water       = user_data.get("water_intake_liters") or 2.0
-    calories    = user_data.get("caloric_intake") or 2200
+    Calculate sub-scores using the RF model itself so they are always
+    consistent with the overall score.
+    """
+    baseline = {
+        "age": user_data["age"],
+        "sex": user_data["sex"],
+        "bmi": user_data.get("bmi") or 24,
+        "fitness_level": user_data.get("fitness_level") or 1,
+        "sleep_consistency": 0.7,
+        "sleep_hours": 7,
+        "steps": 7000,
+        "exercise_minutes": 30,
+        "meals": 3,
+        "junk_food_meals": 1,
+        "water_intake_liters": 2.0,
+        "caloric_intake": 2200,
+        "screen_time_hours": 6,
+        "work_hours": 8,
+        "stress_level": 5,
+    }
+    baseline_score = predict_score(baseline)
+
+    sleep = user_data["sleep_hours"]
+    steps = user_data["steps"]
+    exercise = user_data["exercise_minutes"]
+    stress = user_data["stress_level"]
+    screen = user_data["screen_time_hours"]
+    work = user_data["work_hours"]
+    junk = user_data["junk_food_meals"]
+    water = user_data.get("water_intake_liters") or 2.0
+    calories = user_data.get("caloric_intake") or 2200
     consistency = user_data.get("sleep_consistency") or 0.7
 
+    def score_dimension(overrides):
+        d = baseline.copy()
+        d.update(overrides)
+        raw = predict_score(d) - baseline_score + 50
+        return round(min(100, max(0, raw)))
+
     return {
-        "Sleep Quality":     round(min(100, max(0, (sleep / 9) * 100 * consistency))),
-        "Physical Activity": round(min(100, max(0, (steps / 12000) * 50 + (exercise / 90) * 50))),
-        "Diet & Nutrition":  round(min(100, max(0, 100 - junk * 15 - abs(calories - 2200) / 50 + water * 5))),
-        "Recovery & Stress": round(min(100, max(0, 100 - stress * 10 + (sleep - 5) * 5))),
-        "Work-Life Balance": round(min(100, max(0, 100 - max(0, work - 8) * 8 - stress * 4 + (8 - screen) * 2)))
+        "Sleep Quality": score_dimension({
+            "sleep_hours": sleep,
+            "sleep_consistency": consistency,
+        }),
+        "Physical Activity": score_dimension({
+            "steps": steps,
+            "exercise_minutes": exercise,
+        }),
+        "Diet & Nutrition": score_dimension({
+            "junk_food_meals": junk,
+            "water_intake_liters": water,
+            "caloric_intake": calories,
+        }),
+        "Recovery & Stress": score_dimension({
+            "stress_level": stress,
+            "sleep_hours": sleep,
+        }),
+        "Work-Life Balance": score_dimension({
+            "work_hours": work,
+            "screen_time_hours": screen,
+            "stress_level": stress,
+        }),
     }
 
 
 def calculate_counterfactuals(user_data, current_score):
-    """Run counterfactual simulations, rank by impact, build combined from actual top 3."""
-    sleep    = user_data["sleep_hours"]
-    screen   = user_data["screen_time_hours"]
-    stress   = user_data["stress_level"]
+    """Dynamically pick the 4 most improvable inputs, rank by impact, build combined from top 3."""
+
+    sleep = user_data["sleep_hours"]
+    screen = user_data["screen_time_hours"]
+    stress = user_data["stress_level"]
     exercise = user_data["exercise_minutes"]
+    steps = user_data["steps"]
+    water = user_data.get("water_intake_liters") or 2.0
+    junk = user_data["junk_food_meals"]
 
-    individual_scenarios = {
-        f"Increase sleep to {min(sleep + 1.5, 9)}h":
-            run_counterfactual(user_data, {"sleep_hours": min(sleep + 1.5, 9)}),
-        f"Reduce screen time to {max(screen - 3, 0)}h":
-            run_counterfactual(user_data, {"screen_time_hours": max(screen - 3, 0)}),
-        f"Reduce stress to {max(stress - 2, 1)}/10":
-            run_counterfactual(user_data, {"stress_level": max(stress - 2, 1)}),
-        f"Add 20 min exercise ({min(exercise + 20, 120)} min total)":
-            run_counterfactual(user_data, {"exercise_minutes": min(exercise + 20, 120)}),
-    }
+    candidate_scenarios = {}
 
-    # Rank individual changes by impact
-    ranked = sorted(individual_scenarios.items(), key=lambda x: x[1] - current_score, reverse=True)
+    if sleep < 8.5:
+        target_sleep = min(sleep + 1.5, 9)
+        candidate_scenarios[f"Increase sleep to {target_sleep}h"] = \
+            run_counterfactual(user_data, {"sleep_hours": target_sleep})
 
-    # Build combined scenario from actual top 3 ranked changes
+    if screen > 2:
+        target_screen = max(screen - 3, 0)
+        candidate_scenarios[f"Reduce screen time to {target_screen}h"] = \
+            run_counterfactual(user_data, {"screen_time_hours": target_screen})
+
+    if stress > 2:
+        target_stress = max(stress - 2, 1)
+        candidate_scenarios[f"Reduce stress to {target_stress}/10"] = \
+            run_counterfactual(user_data, {"stress_level": target_stress})
+
+    if exercise < 100:
+        target_exercise = min(exercise + 20, 120)
+        candidate_scenarios[f"Add 20 min exercise ({target_exercise} min total)"] = \
+            run_counterfactual(user_data, {"exercise_minutes": target_exercise})
+
+    if steps < 10000:
+        target_steps = min(steps + 3000, 12000)
+        candidate_scenarios[f"Increase steps to {target_steps}"] = \
+            run_counterfactual(user_data, {"steps": target_steps})
+
+    if water < 2.5:
+        target_water = min(water + 1.0, 4.0)
+        candidate_scenarios[f"Increase water to {target_water}L"] = \
+            run_counterfactual(user_data, {"water_intake_liters": target_water})
+
+    if junk > 0:
+        target_junk = max(junk - 1, 0)
+        candidate_scenarios[f"Reduce junk food to {target_junk} meals"] = \
+            run_counterfactual(user_data, {"junk_food_meals": target_junk})
+
+    if not candidate_scenarios:
+        candidate_scenarios["Increase sleep to 9h"] = \
+            run_counterfactual(user_data, {"sleep_hours": 9})
+        candidate_scenarios["Reduce stress to 1/10"] = \
+            run_counterfactual(user_data, {"stress_level": 1})
+
+    ranked = sorted(candidate_scenarios.items(), key=lambda x: x[1] - current_score, reverse=True)[:4]
+
     top_3_overrides = {}
     for label, _ in ranked[:3]:
         if "sleep" in label:
@@ -160,6 +236,12 @@ def calculate_counterfactuals(user_data, current_score):
             top_3_overrides["stress_level"] = max(stress - 2, 1)
         elif "exercise" in label:
             top_3_overrides["exercise_minutes"] = min(exercise + 20, 120)
+        elif "steps" in label:
+            top_3_overrides["steps"] = min(steps + 3000, 12000)
+        elif "water" in label:
+            top_3_overrides["water_intake_liters"] = min(water + 1.0, 4.0)
+        elif "junk" in label:
+            top_3_overrides["junk_food_meals"] = max(junk - 1, 0)
 
     combined_score = run_counterfactual(user_data, top_3_overrides)
     results = ranked + [("Combine all top 3 changes", combined_score)]
