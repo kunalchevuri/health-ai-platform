@@ -36,6 +36,144 @@ BOUNDS = {
     "sleep_consistency":   (0.2, 1.0)
 }
 
+PERSONAS = ["athlete", "student", "office_worker", "parent", "manual_laborer", "healthcare_worker", "retired", "general"]
+
+PERSONA_BASELINES = {
+    "athlete": {
+        "sleep_hours": 8.5,
+        "steps": 12000,
+        "exercise_minutes": 60,
+        "stress_level": 4,
+        "screen_time_hours": 4,
+        "work_hours": 6,
+        "junk_food_meals": 0,
+        "water_intake_liters": 3.5,
+    },
+    "student": {
+        "sleep_hours": 7.5,
+        "steps": 7000,
+        "exercise_minutes": 30,
+        "stress_level": 6,
+        "screen_time_hours": 8,
+        "work_hours": 6,
+        "junk_food_meals": 1,
+        "water_intake_liters": 2.0,
+    },
+    "office_worker": {
+        "sleep_hours": 7,
+        "steps": 5000,
+        "exercise_minutes": 20,
+        "stress_level": 5,
+        "screen_time_hours": 9,
+        "work_hours": 9,
+        "junk_food_meals": 1,
+        "water_intake_liters": 1.8,
+    },
+    "parent": {
+        "sleep_hours": 6.5,
+        "steps": 7000,
+        "exercise_minutes": 20,
+        "stress_level": 6,
+        "screen_time_hours": 5,
+        "work_hours": 10,
+        "junk_food_meals": 1,
+        "water_intake_liters": 2.0,
+    },
+    "manual_laborer": {
+        "sleep_hours": 7.5,
+        "steps": 15000,
+        "exercise_minutes": 45,
+        "stress_level": 5,
+        "screen_time_hours": 3,
+        "work_hours": 10,
+        "junk_food_meals": 1,
+        "water_intake_liters": 3.0,
+    },
+    "healthcare_worker": {
+        "sleep_hours": 7,
+        "steps": 10000,
+        "exercise_minutes": 25,
+        "stress_level": 7,
+        "screen_time_hours": 5,
+        "work_hours": 12,
+        "junk_food_meals": 1,
+        "water_intake_liters": 2.0,
+    },
+    "retired": {
+        "sleep_hours": 8,
+        "steps": 5000,
+        "exercise_minutes": 30,
+        "stress_level": 3,
+        "screen_time_hours": 5,
+        "work_hours": 2,
+        "junk_food_meals": 1,
+        "water_intake_liters": 2.0,
+    },
+    "general": {
+        "sleep_hours": 7,
+        "steps": 7000,
+        "exercise_minutes": 30,
+        "stress_level": 5,
+        "screen_time_hours": 6,
+        "work_hours": 8,
+        "junk_food_meals": 1,
+        "water_intake_liters": 2.0,
+    },
+}
+
+
+def classify_persona(occupation: str) -> str:
+    """Use the LLM to classify occupation into a persona category."""
+    if not occupation or occupation.strip() == "":
+        return "general"
+
+    try:
+        response = client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a classifier. Respond with exactly one word from this list: athlete, student, office_worker, parent, manual_laborer, healthcare_worker, retired, general. No punctuation, no explanation."
+                },
+                {
+                    "role": "user",
+                    "content": f"Classify this occupation into one category: {occupation}"
+                }
+            ],
+            max_tokens=10
+        )
+        persona = response.choices[0].message.content.strip().lower()
+        return persona if persona in PERSONAS else "general"
+    except:
+        return "general"
+
+
+def calculate_bmi(user_data: dict) -> float | None:
+    """Calculate BMI from height and weight if provided, otherwise use provided BMI."""
+    # If explicit BMI provided, use it
+    if user_data.get("bmi"):
+        return user_data["bmi"]
+
+    # Calculate from height + weight
+    height_cm = user_data.get("height_cm")
+    weight_kg = user_data.get("weight_kg")
+
+    if height_cm and weight_kg and height_cm > 0:
+        bmi = weight_kg / ((height_cm / 100) ** 2)
+        return round(bmi, 1)
+
+    # Imperial: height_ft, height_in, weight_lbs
+    height_ft = user_data.get("height_ft")
+    height_in_extra = user_data.get("height_in", 0)
+    weight_lbs = user_data.get("weight_lbs")
+
+    if height_ft and weight_lbs:
+        total_inches = (height_ft * 12) + (height_in_extra or 0)
+        bmi = (weight_lbs / (total_inches ** 2)) * 703
+        return round(bmi, 1)
+
+    return None
+
 
 def validate_inputs(user_data):
     """Raise an error if any required field is missing or any value is out of range."""
@@ -103,27 +241,29 @@ def run_counterfactual(user_data, override):
     return predict_score(modified)
 
 
-def calculate_sub_scores(user_data):
+def calculate_sub_scores(user_data, persona="general"):
     """
-    Calculate sub-scores using the RF model itself so they are always
-    consistent with the overall score.
+    Calculate sub-scores using the RF model with persona-adjusted baselines
+    so scores reflect what's realistic for this person's life situation.
     """
+    persona_base = PERSONA_BASELINES.get(persona, PERSONA_BASELINES["general"])
+
     baseline = {
         "age": user_data["age"],
         "sex": user_data["sex"],
-        "bmi": user_data.get("bmi") or 24,
+        "bmi": calculate_bmi(user_data) or 24,
         "fitness_level": user_data.get("fitness_level") or 1,
         "sleep_consistency": 0.7,
-        "sleep_hours": 7,
-        "steps": 7000,
-        "exercise_minutes": 30,
+        "sleep_hours": persona_base["sleep_hours"],
+        "steps": persona_base["steps"],
+        "exercise_minutes": persona_base["exercise_minutes"],
         "meals": 3,
-        "junk_food_meals": 1,
-        "water_intake_liters": 2.0,
+        "junk_food_meals": persona_base["junk_food_meals"],
+        "water_intake_liters": persona_base["water_intake_liters"],
         "caloric_intake": 2200,
-        "screen_time_hours": 6,
-        "work_hours": 8,
-        "stress_level": 5,
+        "screen_time_hours": persona_base["screen_time_hours"],
+        "work_hours": persona_base["work_hours"],
+        "stress_level": persona_base["stress_level"],
     }
     baseline_score = predict_score(baseline)
 
@@ -249,7 +389,7 @@ def calculate_counterfactuals(user_data, current_score):
     return [(label, score, round(score - current_score, 1)) for label, score in results]
 
 
-def generate_report(score, sub_scores, cf_results, user_data):
+def generate_report(score, sub_scores, cf_results, user_data, occupation="", persona="general", user_context=""):
     """Call the LLM to write the final report using pre-calculated data."""
     cf_text  = "\n".join([
         f"- {label}: predicted score {pred} ({'+' if delta > 0 else ''}{delta} points)"
@@ -257,8 +397,17 @@ def generate_report(score, sub_scores, cf_results, user_data):
     ])
     sub_text = "\n".join([f"- {k}: {v}/100" for k, v in sub_scores.items()])
 
+    occupation_line = f"Occupation: {occupation}" if occupation else ""
+    persona_line = f"Lifestyle category: {persona.replace('_', ' ')}"
+    context_line = f"User context: {user_context}" if user_context else ""
+    personal_context = "\n".join(filter(None, [occupation_line, persona_line, context_line]))
+
     prompt = f"""
 You are a health analytics platform generating a personalized daily report. Be analytical, direct, and specific. Do not ask questions. Do not end with "how do you feel." Lead with findings, not warmth.
+
+IMPORTANT: This person has provided personal context. Every recommendation must be tailored to their specific situation — do not give generic advice that ignores who they are.
+
+{personal_context}
 
 USER DATA:
 - Overall routine score: {score}/100
@@ -314,13 +463,31 @@ Do NOT repeat the counterfactual list. For each priority, explain HOW to make th
 
 
 def generate_recommendation(user_data):
-    """Main entry point — validates input, runs all calculations, returns all results."""
+    """Main entry point — validates input, classifies persona, runs all calculations."""
+    # Extract string fields before validation
+    occupation = user_data.pop("occupation", "") or ""
+    user_context = user_data.pop("user_context", "") or ""
+
+    # Calculate BMI from height/weight if not provided
+    computed_bmi = calculate_bmi(user_data)
+    if computed_bmi:
+        user_data["bmi"] = computed_bmi
+
+    # Remove height/weight fields before model inference
+    for field in ["height_cm", "weight_kg", "height_ft", "height_in", "weight_lbs"]:
+        user_data.pop(field, None)
+
     validate_inputs(user_data)
-    score      = predict_score(user_data)
-    sub_scores = calculate_sub_scores(user_data)
+
+    # Classify persona from occupation
+    persona = classify_persona(occupation) if occupation else "general"
+
+    score = predict_score(user_data)
+    sub_scores = calculate_sub_scores(user_data, persona)
     cf_results = calculate_counterfactuals(user_data, score)
-    report     = generate_report(score, sub_scores, cf_results, user_data)
-    return score, sub_scores, cf_results, report
+    report = generate_report(score, sub_scores, cf_results, user_data, occupation, persona, user_context)
+
+    return score, sub_scores, cf_results, report, persona
 
 
 # Test it
@@ -340,12 +507,17 @@ if __name__ == "__main__":
         "junk_food_meals": 2,
         "water_intake_liters": 2,
         "caloric_intake": 2600,
-        "meals": 3
+        "meals": 3,
+        "occupation": "high school student and competitive swimmer",
+        "user_context": "I train twice a day and have AP exams coming up",
+        "height_ft": 5,
+        "height_in": 10,
+        "weight_lbs": 155,
     }
 
-    score, sub_scores, cf_results, report = generate_recommendation(test_data)
+    score, sub_scores, cf_results, report, persona = generate_recommendation(test_data)
 
-    print(f"Predicted Score: {score}/100\n")
+    print(f"Predicted Score: {score}/100 | Persona: {persona}\n")
 
     print("Sub-scores:")
     for k, v in sub_scores.items():

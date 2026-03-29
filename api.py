@@ -17,21 +17,36 @@ app.add_middleware(
 
 
 class HealthInput(BaseModel):
+    # Required fields
     age: Optional[float] = None
-    sex: Optional[float] = None                    # 0 = Male, 1 = Female
-    bmi: Optional[float] = None
-    fitness_level: Optional[float] = None          # 0 = Beginner, 1 = Intermediate, 2 = Advanced
-    sleep_consistency: Optional[float] = None
+    sex: Optional[float] = None
     sleep_hours: Optional[float] = None
     steps: Optional[float] = None
     exercise_minutes: Optional[float] = None
-    meals: Optional[float] = None
-    junk_food_meals: Optional[float] = None
-    water_intake_liters: Optional[float] = None
-    caloric_intake: Optional[float] = None
+    stress_level: Optional[float] = None
     screen_time_hours: Optional[float] = None
     work_hours: Optional[float] = None
-    stress_level: Optional[float] = None
+    junk_food_meals: Optional[float] = None
+    water_intake_liters: Optional[float] = None
+
+    # Optional numeric fields
+    bmi: Optional[float] = None
+    fitness_level: Optional[float] = None
+    sleep_consistency: Optional[float] = None
+    caloric_intake: Optional[float] = None
+    meals: Optional[float] = None
+    body_fat_pct: Optional[float] = None
+
+    # Height/weight fields (BMI auto-calculated if provided)
+    height_cm: Optional[float] = None
+    weight_kg: Optional[float] = None
+    height_ft: Optional[float] = None
+    height_in: Optional[float] = None
+    weight_lbs: Optional[float] = None
+
+    # Context fields
+    occupation: Optional[str] = None
+    user_context: Optional[str] = None
 
 
 @app.get("/")
@@ -47,13 +62,15 @@ def health():
 @app.post("/predict")
 def predict(data: HealthInput):
     try:
-        # Convert to dict and strip None values
-        user_data = {k: v for k, v in data.model_dump().items() if v is not None}
+        # Convert to dict, strip None numeric values but keep string fields
+        user_data = {}
+        for k, v in data.model_dump().items():
+            if v is not None:
+                user_data[k] = v
 
-        # Run the full pipeline — validation, scoring, counterfactuals, AI report
-        score, sub_scores, cf_results, report = generate_recommendation(user_data)
+        # Run the full pipeline
+        score, sub_scores, cf_results, report, persona = generate_recommendation(user_data)
 
-        # Format counterfactuals for JSON
         counterfactuals = [
             {"label": label, "predicted_score": pred, "delta": delta}
             for label, pred, delta in cf_results
@@ -63,11 +80,11 @@ def predict(data: HealthInput):
             "routine_score": score,
             "sub_scores": sub_scores,
             "counterfactuals": counterfactuals,
-            "report": report
+            "report": report,
+            "persona": persona,
         }
 
     except ValueError as e:
         return JSONResponse(status_code=400, content={"error": str(e)})
-
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Prediction failed: {str(e)}"})
