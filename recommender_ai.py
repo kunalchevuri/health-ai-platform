@@ -389,7 +389,7 @@ def calculate_counterfactuals(user_data, current_score):
     return [(label, score, round(score - current_score, 1)) for label, score in results]
 
 
-def generate_report(score, sub_scores, cf_results, user_data, occupation="", persona="general", user_context=""):
+def generate_report(score, sub_scores, cf_results, user_data, occupation="", persona="general", user_context="", physical_stats=None):
     """Call the LLM to write the final report using pre-calculated data."""
     cf_text  = "\n".join([
         f"- {label}: predicted score {pred} ({'+' if delta > 0 else ''}{delta} points)"
@@ -405,7 +405,15 @@ def generate_report(score, sub_scores, cf_results, user_data, occupation="", per
     prompt = f"""
 You are a health analytics platform generating a personalized daily report. Be analytical, direct, and specific. Do not ask questions. Do not end with "how do you feel." Lead with findings, not warmth.
 
-IMPORTANT: This person has provided personal context. Every recommendation must be tailored to their specific situation — do not give generic advice that ignores who they are.
+CRITICAL PERSONALIZATION RULES — VIOLATIONS WILL MAKE THIS REPORT USELESS:
+1. You MUST reference the user's occupation and context in EVERY section — not just once at the start.
+2. If the user is an athlete, NEVER suggest "take a walk" or "add steps" — they already have extreme physical output. Focus on recovery, sleep, and nutrition instead.
+3. If the user mentions exams, competitions, or high-stress events, acknowledge them by name and adjust recommendations around them.
+4. Every single recommendation must be impossible to give to a different person — it must reference their exact occupation, context, and numbers.
+5. If occupation contains a sport, address training load, recovery, and sport-specific nutrition — not generic fitness advice.
+6. NEVER give advice that contradicts the user's persona. An athlete getting "add 20 min exercise" is a failure. A parent getting "reduce work hours" without acknowledging childcare is a failure.
+7. If height, weight, or body fat % are provided, reference them when giving nutrition and recovery advice — a 155lb swimmer needs completely different caloric guidance than a 220lb manual laborer.
+8. If BMI is provided or calculated, use it to contextualize nutrition recommendations — but never shame the user about their body composition.
 
 {personal_context}
 
@@ -414,6 +422,16 @@ USER DATA:
 - Sleep: {user_data['sleep_hours']}h | Steps: {user_data['steps']} | Exercise: {user_data['exercise_minutes']} min
 - Stress: {user_data['stress_level']}/10 | Screen time: {user_data['screen_time_hours']}h | Work: {user_data['work_hours']}h
 - Junk food meals: {user_data['junk_food_meals']} | Water: {user_data['water_intake_liters']}L
+- BMI: {user_data.get('bmi', 'not provided')} | Fitness level: {user_data.get('fitness_level', 'not provided')}
+- Height: {str(int(physical_stats.get('height_ft', 0))) + 'ft ' + str(int(physical_stats.get('height_in', 0))) + 'in' if physical_stats and physical_stats.get('height_ft') else ('not provided')} | Weight: {str(physical_stats.get('weight_lbs', '')) + 'lbs' if physical_stats and physical_stats.get('weight_lbs') else 'not provided'} | Body fat: {str(physical_stats.get('body_fat_pct', '')) + '%' if physical_stats and physical_stats.get('body_fat_pct') else 'not provided'}
+
+PERSONA CONTEXT (use this to make every recommendation specific):
+- Occupation: {occupation if occupation else 'not provided'}
+- Lifestyle category: {persona.replace('_', ' ')}
+- User's own words about their situation: "{user_context if user_context else 'not provided'}"
+
+PERSONA-SPECIFIC RULES FOR THIS USER:
+{"- This is an ATHLETE. Do NOT suggest adding steps or basic exercise. Focus exclusively on sleep quality, recovery, nutrition timing, and stress management as they relate to training load. Reference their specific sport if mentioned." if persona == "athlete" else ""}{"- This is a STUDENT. Acknowledge academic pressure explicitly. Frame all recommendations around study schedules and academic calendar. If exams are mentioned, factor that into stress recommendations." if persona == "student" else ""}{"- This is a PARENT. Acknowledge that reduced work-life balance may be structural, not a choice. Focus on high-leverage small changes that fit around family responsibilities." if persona == "parent" else ""}{"- This is a HEALTHCARE WORKER. Acknowledge irregular hours and shift work as a root cause of poor sleep and stress, not a personal failure. Recommendations must be realistic for someone with unpredictable schedules." if persona == "healthcare_worker" else ""}{"- This is a MANUAL LABORER. Their physical activity at work is already extremely high. Do not suggest more exercise — focus entirely on recovery, hydration, nutrition, and sleep quality." if persona == "manual_laborer" else ""}{"- This is a RETIRED person. They have more time flexibility than most. Recommendations should leverage this — longer sleep windows, midday exercise, meal prep time." if persona == "retired" else ""}{"- This is an OFFICE WORKER. Sedentary work is a core problem. Address the specific health risks of sitting 8+ hours — back health, eye strain from screens, metabolic slowdown." if persona == "office_worker" else ""}
 
 SUB-SCORES (report these exactly — do not change the numbers):
 {sub_text}
@@ -473,6 +491,16 @@ def generate_recommendation(user_data):
     if computed_bmi:
         user_data["bmi"] = computed_bmi
 
+    # Store physical stats before popping for use in report
+    physical_stats = {
+        "height_ft": user_data.get("height_ft"),
+        "height_in": user_data.get("height_in", 0),
+        "weight_lbs": user_data.get("weight_lbs"),
+        "height_cm": user_data.get("height_cm"),
+        "weight_kg": user_data.get("weight_kg"),
+        "body_fat_pct": user_data.get("body_fat_pct"),
+    }
+
     # Remove height/weight fields before model inference
     for field in ["height_cm", "weight_kg", "height_ft", "height_in", "weight_lbs"]:
         user_data.pop(field, None)
@@ -485,7 +513,7 @@ def generate_recommendation(user_data):
     score = predict_score(user_data)
     sub_scores = calculate_sub_scores(user_data, persona)
     cf_results = calculate_counterfactuals(user_data, score)
-    report = generate_report(score, sub_scores, cf_results, user_data, occupation, persona, user_context)
+    report = generate_report(score, sub_scores, cf_results, user_data, occupation, persona, user_context, physical_stats)
 
     return score, sub_scores, cf_results, report, persona
 
