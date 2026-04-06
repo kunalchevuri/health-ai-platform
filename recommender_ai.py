@@ -343,7 +343,7 @@ def calculate_counterfactuals(user_data, current_score):
         candidate_scenarios[f"Add 20 min exercise ({target_exercise} min total)"] = \
             run_counterfactual(user_data, {"exercise_minutes": target_exercise})
 
-    if steps < 10000:
+    if steps < 10000 and exercise < 60:
         target_steps = min(steps + 3000, 12000)
         candidate_scenarios[f"Increase steps to {target_steps}"] = \
             run_counterfactual(user_data, {"steps": target_steps})
