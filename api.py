@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from recommender_ai import generate_recommendation
 
 app = FastAPI()
@@ -47,6 +47,20 @@ class HealthInput(BaseModel):
     # Context fields
     occupation: Optional[str] = None
     user_context: Optional[str] = None
+    grade_year: Optional[str] = None
+    stressors: Optional[List[str]] = None
+    goals: Optional[List[str]] = None
+    life_context: Optional[str] = None
+
+    # Mode: "full_analysis" (default) or "daily_checkin"
+    mode: Optional[str] = "full_analysis"
+
+    # For daily check-in: the input dict from the previous full analysis
+    last_analysis: Optional[dict] = None
+
+    # Optional history of recent check-ins for trend detection
+    # Each entry is a dict with at least the 5 core daily fields
+    checkin_history: Optional[List[dict]] = None
 
 
 @app.get("/")
@@ -68,8 +82,18 @@ def predict(data: HealthInput):
             if v is not None:
                 user_data[k] = v
 
+        # Extract mode and history before passing to recommender
+        mode = user_data.pop("mode", "full_analysis") or "full_analysis"
+        last_analysis = user_data.pop("last_analysis", None)
+        checkin_history = user_data.pop("checkin_history", None)
+
         # Run the full pipeline
-        score, sub_scores, cf_results, report, persona = generate_recommendation(user_data)
+        score, sub_scores, cf_results, report, persona = generate_recommendation(
+            user_data,
+            mode=mode,
+            last_analysis=last_analysis,
+            checkin_history=checkin_history,
+        )
 
         counterfactuals = [
             {"label": label, "predicted_score": pred, "delta": delta}
@@ -82,6 +106,7 @@ def predict(data: HealthInput):
             "counterfactuals": counterfactuals,
             "report": report,
             "persona": persona,
+            "mode": mode,
         }
 
     except ValueError as e:
