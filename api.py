@@ -52,6 +52,9 @@ class HealthInput(BaseModel):
     goals: Optional[List[str]] = None
     life_context: Optional[str] = None
 
+    # Activity level: "Sedentary", "Lightly active", "Moderately active", "Very active", "Athlete"
+    activity_level: Optional[str] = "moderate"
+
     # Mode: "full_analysis" (default) or "daily_checkin"
     mode: Optional[str] = "full_analysis"
 

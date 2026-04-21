@@ -293,6 +293,95 @@ def detect_trend_boosts(checkin_history: list) -> dict:
     return boosts
 
 
+def get_context_weights(occupation: str = "", activity_level: str = "moderate",
+                        stressors: list = None, goals: list = None) -> dict:
+    """
+    Returns per-dimension weights for the context-aware routine_score.
+    A higher weight means that dimension matters more for this user's health outcome.
+    Weights are summed and normalized inside compute_weighted_score.
+    """
+    weights = {
+        "Sleep Quality":     1.0,
+        "Physical Activity": 1.0,
+        "Diet & Nutrition":  1.0,
+        "Recovery & Stress": 1.0,
+        "Work-Life Balance": 1.0,
+    }
+
+    al  = (activity_level or "moderate").lower()
+    sl  = [s.lower() for s in (stressors or [])]
+    gl  = [g.lower() for g in (goals or [])]
+    occ = (occupation or "").lower()
+
+    # Activity-level tier adjustments
+    if al in ("athlete", "very active"):
+        weights["Physical Activity"] = 0.6   # already very active — less marginal value
+        weights["Sleep Quality"]     = 1.4
+        weights["Recovery & Stress"] = 1.4
+    elif al == "sedentary":
+        weights["Physical Activity"] = 1.5   # movement matters most
+        weights["Work-Life Balance"] = 1.2
+    elif al in ("lightly active", "lightly_active"):
+        weights["Physical Activity"] = 1.2
+
+    # Occupation adjustments
+    if any(k in occ for k in ["athlete", "swimmer", "runner", "football", "basketball", "soccer", "sport"]):
+        weights["Physical Activity"] = 0.5
+        weights["Sleep Quality"]     = 1.5
+        weights["Recovery & Stress"] = 1.5
+    elif any(k in occ for k in ["student", "school", "university", "college"]):
+        weights["Sleep Quality"]     = 1.3
+        weights["Recovery & Stress"] = 1.2
+        weights["Work-Life Balance"] = 1.1
+    elif any(k in occ for k in ["office", "desk", "remote", "engineer", "developer", "manager", "analyst"]):
+        weights["Work-Life Balance"] = 1.4
+        weights["Physical Activity"] = 1.2
+    elif any(k in occ for k in ["nurse", "doctor", "healthcare", "hospital", "medical"]):
+        weights["Recovery & Stress"] = 1.5
+        weights["Work-Life Balance"] = 1.3
+    elif any(k in occ for k in ["parent", "mom", "dad", "caregiver"]):
+        weights["Work-Life Balance"] = 1.4
+        weights["Sleep Quality"]     = 1.2
+    elif any(k in occ for k in ["manual", "labor", "construction", "warehouse"]):
+        weights["Physical Activity"] = 0.6   # already very physically active
+        weights["Recovery & Stress"] = 1.4
+
+    # Stressor boosts — active stressors make those dimensions more critical
+    if any(k in sl for k in ["exam", "exams", "finals", "test", "midterms", "academic pressure"]):
+        weights["Sleep Quality"]     *= 1.4
+        weights["Recovery & Stress"] *= 1.3
+    if any(k in sl for k in ["training", "competition", "game", "match", "tournament", "season", "physical training load"]):
+        weights["Recovery & Stress"] *= 1.4
+        weights["Sleep Quality"]     *= 1.3
+        weights["Physical Activity"] *= 0.7  # already training hard
+    if any(k in sl for k in ["work", "deadline", "project", "overtime", "work deadlines", "burnout"]):
+        weights["Work-Life Balance"] *= 1.4
+        weights["Recovery & Stress"] *= 1.2
+    if "sleep deprivation" in sl:
+        weights["Sleep Quality"]     *= 1.5
+
+    # Goal boosts — what the user explicitly wants to improve
+    if any("sleep" in g for g in gl):
+        weights["Sleep Quality"]     *= 1.3
+    if any("stress" in g for g in gl):
+        weights["Recovery & Stress"] *= 1.3
+    if any(g in gl for g in ["lose weight", "weight", "nutrition", "diet", "eat", "better nutrition"]):
+        weights["Diet & Nutrition"]  *= 1.3
+    if any(g in gl for g in ["build muscle", "fitness", "exercise", "active", "more energy"]):
+        weights["Physical Activity"] *= 1.2
+    if any(g in gl for g in ["work-life balance", "balance", "focus", "improve focus"]):
+        weights["Work-Life Balance"] *= 1.3
+
+    return weights
+
+
+def compute_weighted_score(sub_scores: dict, context_weights: dict) -> float:
+    """Routine score as a context-weighted average of the 5 sub-scores."""
+    total_weight = sum(context_weights[k] for k in sub_scores)
+    weighted     = sum(sub_scores[k] * context_weights[k] for k in sub_scores) / total_weight
+    return round(weighted, 1)
+
+
 def calculate_sub_scores(user_data, persona="general", stressors=None, checkin_history=None):
     """
     Calculate sub-scores using the RF model with persona-adjusted baselines
@@ -373,27 +462,35 @@ def calculate_sub_scores(user_data, persona="general", stressors=None, checkin_h
     }
 
 
-def calculate_counterfactuals(user_data, current_score, persona="general", stressors=None, goals=None):
+def calculate_counterfactuals(user_data, current_score, persona="general", stressors=None, goals=None, context_weights=None):
     """
     Dynamically pick the 4 most improvable inputs, rank by impact, build combined from top 3.
-    Filters suggestions to match what's relevant for this user's persona and stressors.
+    Uses context-weighted sub-score scoring when context_weights is provided so predicted
+    scores match the same formula as the user's actual routine_score.
     """
-    sleep = user_data["sleep_hours"]
-    screen = user_data["screen_time_hours"]
-    stress = user_data["stress_level"]
+    def _score_variant(override):
+        modified = user_data.copy()
+        modified.update(override)
+        if context_weights:
+            sub = calculate_sub_scores(modified, persona, stressors)
+            return compute_weighted_score(sub, context_weights)
+        return predict_score(modified)
+
+    sleep    = user_data["sleep_hours"]
+    screen   = user_data["screen_time_hours"]
+    stress   = user_data["stress_level"]
     exercise = user_data["exercise_minutes"]
-    steps = user_data["steps"]
-    water = user_data.get("water_intake_liters") or 2.0
-    junk = user_data["junk_food_meals"]
+    steps    = user_data["steps"]
+    water    = user_data.get("water_intake_liters") or 2.0
+    junk     = user_data["junk_food_meals"]
 
     sl = [s.lower() for s in (stressors or [])]
-    exam_stress = any(k in sl for k in ["exam", "exams", "finals", "test", "midterms"])
+    exam_stress   = any(k in sl for k in ["exam", "exams", "finals", "test", "midterms"])
     athletic_load = persona == "athlete" or any(k in sl for k in ["training", "competition", "game", "match"])
     high_physical = persona in ("athlete", "manual_laborer")
 
     candidate_scenarios = {}
 
-    # Sleep — always relevant; higher priority when exam stress or athletic recovery is active
     sleep_ceiling = 9.0 if (exam_stress or athletic_load) else 8.5
     if sleep < sleep_ceiling:
         target_sleep = min(sleep + 1.5, sleep_ceiling)
@@ -404,7 +501,7 @@ def calculate_counterfactuals(user_data, current_score, persona="general", stres
             if athletic_load else
             f"Increase sleep to {target_sleep}h"
         )
-        candidate_scenarios[label] = run_counterfactual(user_data, {"sleep_hours": target_sleep})
+        candidate_scenarios[label] = _score_variant({"sleep_hours": target_sleep})
 
     if screen > 2:
         target_screen = max(screen - 3, 0)
@@ -413,7 +510,7 @@ def calculate_counterfactuals(user_data, current_score, persona="general", stres
             if athletic_load else
             f"Reduce screen time to {target_screen}h"
         )
-        candidate_scenarios[label] = run_counterfactual(user_data, {"screen_time_hours": target_screen})
+        candidate_scenarios[label] = _score_variant({"screen_time_hours": target_screen})
 
     if stress > 2:
         target_stress = max(stress - 2, 1)
@@ -422,35 +519,31 @@ def calculate_counterfactuals(user_data, current_score, persona="general", stres
             if sl else
             f"Reduce stress to {target_stress}/10"
         )
-        candidate_scenarios[label] = run_counterfactual(user_data, {"stress_level": target_stress})
+        candidate_scenarios[label] = _score_variant({"stress_level": target_stress})
 
-    # Exercise — skip for high-physical personas; they already have massive output
     if not high_physical and exercise < 100:
         target_exercise = min(exercise + 20, 120)
         candidate_scenarios[f"Add 20 min exercise ({target_exercise} min total)"] = \
-            run_counterfactual(user_data, {"exercise_minutes": target_exercise})
+            _score_variant({"exercise_minutes": target_exercise})
 
-    # Steps — skip for athletes/manual laborers
     if not high_physical and steps < 10000 and exercise < 60:
         target_steps = min(steps + 3000, 12000)
         candidate_scenarios[f"Increase steps to {target_steps}"] = \
-            run_counterfactual(user_data, {"steps": target_steps})
+            _score_variant({"steps": target_steps})
 
     if water < 2.5:
         target_water = min(water + 1.0, 4.0)
         candidate_scenarios[f"Increase water to {target_water}L"] = \
-            run_counterfactual(user_data, {"water_intake_liters": target_water})
+            _score_variant({"water_intake_liters": target_water})
 
     if junk > 0:
         target_junk = max(junk - 1, 0)
         candidate_scenarios[f"Reduce junk food to {target_junk} meals"] = \
-            run_counterfactual(user_data, {"junk_food_meals": target_junk})
+            _score_variant({"junk_food_meals": target_junk})
 
     if not candidate_scenarios:
-        candidate_scenarios["Increase sleep to 9h"] = \
-            run_counterfactual(user_data, {"sleep_hours": 9})
-        candidate_scenarios["Reduce stress to 1/10"] = \
-            run_counterfactual(user_data, {"stress_level": 1})
+        candidate_scenarios["Increase sleep to 9h"] = _score_variant({"sleep_hours": 9})
+        candidate_scenarios["Reduce stress to 1/10"] = _score_variant({"stress_level": 1})
 
     ranked = sorted(candidate_scenarios.items(), key=lambda x: x[1] - current_score, reverse=True)[:4]
 
@@ -471,7 +564,7 @@ def calculate_counterfactuals(user_data, current_score, persona="general", stres
         elif "junk" in label:
             top_3_overrides["junk_food_meals"] = max(junk - 1, 0)
 
-    combined_score = run_counterfactual(user_data, top_3_overrides)
+    combined_score = _score_variant(top_3_overrides)
     results = ranked + [("Combine all top 3 changes", combined_score)]
 
     return [(label, score, round(score - current_score, 1)) for label, score in results]
@@ -659,12 +752,13 @@ def generate_recommendation(user_data, mode="full_analysis", last_analysis=None,
     mode="daily_checkin"  → blends last_analysis with today's 5 slider fields, skips full re-analysis
     """
     # Extract string/list context fields before validation (model never sees these)
-    occupation   = user_data.pop("occupation",   "") or ""
-    user_context = user_data.pop("user_context", "") or ""
-    grade_year   = user_data.pop("grade_year",   None)
-    stressors    = user_data.pop("stressors",    None)
-    goals        = user_data.pop("goals",        None)
-    life_context = user_data.pop("life_context", None)
+    occupation     = user_data.pop("occupation",     "") or ""
+    user_context   = user_data.pop("user_context",   "") or ""
+    grade_year     = user_data.pop("grade_year",     None)
+    stressors      = user_data.pop("stressors",      None)
+    goals          = user_data.pop("goals",          None)
+    life_context   = user_data.pop("life_context",   None)
+    activity_level = user_data.pop("activity_level", "moderate") or "moderate"
 
     # --- DAILY CHECK-IN: blend last full-analysis data with today's slider values ---
     if mode == "daily_checkin" and last_analysis:
@@ -698,9 +792,23 @@ def generate_recommendation(user_data, mode="full_analysis", last_analysis=None,
     # Classify persona from occupation string
     persona = classify_persona(occupation) if occupation else "general"
 
-    score     = predict_score(user_data)
+    # Sub-scores first — use context-aware persona baselines
     sub_scores = calculate_sub_scores(user_data, persona, stressors=stressors, checkin_history=checkin_history)
-    cf_results = calculate_counterfactuals(user_data, score, persona=persona, stressors=stressors, goals=goals)
+
+    # routine_score = context-weighted average of sub-scores (not raw ML prediction)
+    # This makes context actually change the overall number, not just the report text
+    context_weights = get_context_weights(
+        occupation=occupation,
+        activity_level=activity_level,
+        stressors=stressors,
+        goals=goals,
+    )
+    score = compute_weighted_score(sub_scores, context_weights)
+
+    cf_results = calculate_counterfactuals(
+        user_data, score, persona=persona, stressors=stressors, goals=goals,
+        context_weights=context_weights,
+    )
     report    = generate_report(
         score, sub_scores, cf_results, user_data,
         occupation=occupation, persona=persona, user_context=user_context,
